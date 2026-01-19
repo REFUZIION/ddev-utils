@@ -71,6 +71,13 @@ class AppState: ObservableObject {
                     self.currentStatus = .idle
                 }
                 
+                if let monitored = self.monitoredProject {
+                    let isStillRunning = projects.contains { $0.name == monitored && $0.status == "running" }
+                    if !isStillRunning {
+                        self.stopMonitoring()
+                    }
+                }
+                
                 guard self.settings.autoMonitorFirstProject,
                       self.monitoredProject == nil,
                       let firstRunning = projects.first(where: { $0.status == "running" }) else { return }
