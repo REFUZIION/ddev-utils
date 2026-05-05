@@ -96,6 +96,8 @@ class SettingsManager: ObservableObject {
         static let customShellPath = "customShellPath"
         static let ddevPath = "ddevPath"
         static let terminalApp = "terminalApp"
+        static let diskSpaceWarningEnabled = "diskSpaceWarningEnabled"
+        static let diskSpaceWarningThresholdPercent = "diskSpaceWarningThresholdPercent"
     }
     
     @Published var statusDisplayMode: StatusDisplayMode {
@@ -176,6 +178,20 @@ class SettingsManager: ObservableObject {
         }
     }
     
+    /// Off by default. When enabled, warns if boot volume used % reaches the threshold.
+    @Published var diskSpaceWarningEnabled: Bool {
+        didSet {
+            defaults.set(diskSpaceWarningEnabled, forKey: Keys.diskSpaceWarningEnabled)
+        }
+    }
+    
+    /// Whole percent (50–99), used only when `diskSpaceWarningEnabled` is true.
+    @Published var diskSpaceWarningThresholdPercent: Double {
+        didSet {
+            defaults.set(diskSpaceWarningThresholdPercent, forKey: Keys.diskSpaceWarningThresholdPercent)
+        }
+    }
+    
     var effectiveShellPath: String {
         if shellType == .custom {
             return customShellPath.isEmpty ? "/bin/zsh" : customShellPath
@@ -217,6 +233,13 @@ class SettingsManager: ObservableObject {
         
         let savedTerminalApp = defaults.string(forKey: Keys.terminalApp) ?? TerminalApp.terminal.rawValue
         self.terminalApp = TerminalApp(rawValue: savedTerminalApp) ?? .terminal
+        
+        self.diskSpaceWarningEnabled = defaults.bool(forKey: Keys.diskSpaceWarningEnabled)
+        
+        let savedDiskThreshold = defaults.double(forKey: Keys.diskSpaceWarningThresholdPercent)
+        self.diskSpaceWarningThresholdPercent = (savedDiskThreshold >= 50 && savedDiskThreshold <= 99)
+            ? savedDiskThreshold
+            : 90
     }
     
     func toggleFavorite(_ projectName: String) {
@@ -245,5 +268,7 @@ class SettingsManager: ObservableObject {
         customShellPath = ""
         ddevPath = ""
         terminalApp = .terminal
+        diskSpaceWarningEnabled = false
+        diskSpaceWarningThresholdPercent = 90
     }
 }

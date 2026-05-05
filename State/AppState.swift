@@ -1,5 +1,6 @@
-import Foundation
+import AppKit
 import Combine
+import Foundation
 
 class AppState: ObservableObject {
     @Published var projects: [DdevProject] = []
@@ -11,6 +12,12 @@ class AppState: ObservableObject {
     private var statusTimer: Timer?
     private var refreshTimer: Timer?
     private var startingProjectTimer: Timer?
+    private var diskSpaceTimer: Timer?
+    
+    /// Avoid repeating the disk alert until usage falls below the threshold again.
+    private var diskSpaceAlertLatchActive = false
+    
+    private static let diskSpaceCheckInterval: TimeInterval = 60
     
     private var xdebugStatusCache: [String: Bool] = [:]
     private var databaseAvailableCache: [String: Bool] = [:]
@@ -22,7 +29,63 @@ class AppState: ObservableObject {
     init() {
         observeSettingsChanges()
         setupTimers()
+        setupDiskSpaceMonitoring()
         refreshProjects()
+    }
+    
+    private func setupDiskSpaceMonitoring() {
+        diskSpaceTimer?.invalidate()
+        diskSpaceTimer = nil
+        
+        guard settings.diskSpaceWarningEnabled else {
+            diskSpaceAlertLatchActive = false
+            return
+        }
+        
+        diskSpaceTimer = Timer(
+            timeInterval: Self.diskSpaceCheckInterval,
+            target: self,
+            selector: #selector(checkDiskSpaceThresholdTick),
+            userInfo: nil,
+            repeats: true
+        )
+        RunLoop.main.add(diskSpaceTimer!, forMode: .common)
+        
+        checkDiskSpaceThreshold()
+    }
+    
+    @objc private func checkDiskSpaceThresholdTick() {
+        checkDiskSpaceThreshold()
+    }
+    
+    private func checkDiskSpaceThreshold() {
+        guard settings.diskSpaceWarningEnabled else { return }
+        guard let fraction = DiskSpaceReader.bootVolumeUsedFraction() else { return }
+        
+        let usedPercent = fraction * 100.0
+        let threshold = settings.diskSpaceWarningThresholdPercent
+        
+        if usedPercent >= threshold {
+            guard !diskSpaceAlertLatchActive else { return }
+            diskSpaceAlertLatchActive = true
+            presentDiskSpaceWarningAlert(usedPercent: usedPercent, threshold: threshold)
+        } else {
+            diskSpaceAlertLatchActive = false
+        }
+    }
+    
+    private func presentDiskSpaceWarningAlert(usedPercent: Double, threshold: Double) {
+        let shownPercent = Int(usedPercent.rounded())
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Disk space warning"
+        alert.informativeText = """
+            Your startup disk is about \(shownPercent)% full (warning threshold: \(Int(threshold))%). \
+            Free up space to avoid macOS stability issues and problems with Docker or Mutagen sync.
+            """
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     func observeSettingsChanges() {
@@ -30,6 +93,7 @@ class AppState: ObservableObject {
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.setupTimers()
+                self?.setupDiskSpaceMonitoring()
             }
             .store(in: &cancellables)
     }
@@ -234,5 +298,7 @@ class AppState: ObservableObject {
         statusTimer?.invalidate()
         refreshTimer?.invalidate()
         startingProjectTimer?.invalidate()
+        diskSpaceTimer?.invalidate()
+        diskSpaceTimer = nil
     }
 }

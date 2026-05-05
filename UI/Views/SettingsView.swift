@@ -46,6 +46,43 @@ struct GeneralSettingsView: View {
             }
             
             Section {
+                Toggle("Disk space warning", isOn: $settings.diskSpaceWarningEnabled)
+                    .help("Alert when startup disk usage reaches the threshold")
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Warn when disk usage reaches:")
+                        Spacer()
+                        Text("\(Int(settings.diskSpaceWarningThresholdPercent))%")
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: $settings.diskSpaceWarningThresholdPercent,
+                        in: 50...99,
+                        step: 1
+                    ) {
+                        EmptyView()
+                    } minimumValueLabel: {
+                        Text("50%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } maximumValueLabel: {
+                        Text("99%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .disabled(!settings.diskSpaceWarningEnabled)
+                }
+            } header: {
+                Text("Disk Space")
+            } footer: {
+                Text("Checks every minute while enabled. Shows one alert until usage drops below your threshold.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Section {
                 HStack {
                     Text("Mutagen polling interval:")
                     Spacer()
