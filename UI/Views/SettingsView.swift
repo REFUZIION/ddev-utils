@@ -46,6 +46,43 @@ struct GeneralSettingsView: View {
             }
             
             Section {
+                Toggle("Disk space warning", isOn: $settings.diskSpaceWarningEnabled)
+                    .help("Alert when startup disk usage reaches the threshold")
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Warn when disk usage reaches:")
+                        Spacer()
+                        Text("\(Int(settings.diskSpaceWarningThresholdPercent))%")
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: $settings.diskSpaceWarningThresholdPercent,
+                        in: 50...99,
+                        step: 1
+                    ) {
+                        EmptyView()
+                    } minimumValueLabel: {
+                        Text("50%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } maximumValueLabel: {
+                        Text("99%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .disabled(!settings.diskSpaceWarningEnabled)
+                }
+            } header: {
+                Text("Disk Space")
+            } footer: {
+                Text("Checks every minute while enabled. Shows one alert until usage drops below your threshold.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Section {
                 HStack {
                     Text("Mutagen polling interval:")
                     Spacer()
@@ -70,6 +107,9 @@ struct GeneralSettingsView: View {
                     }
                     .frame(width: 150)
                 }
+                Text("During active sync, polling uses your interval below. When Mutagen is idle (synced), polling slows to about every max(2x that interval, 1 second). When a sync starts, a short burst of extra checks runs so the menu bar and menu update quickly.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
                 Text("Refresh Intervals")
             }
@@ -326,7 +366,7 @@ struct AdvancedSettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("DDEV Utils")
                                 .font(.headline)
-                            Text("Version 1.2.1")
+                            Text("Version 1.2.2")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
