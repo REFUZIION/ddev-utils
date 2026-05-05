@@ -1,5 +1,6 @@
-import Foundation
+import AppKit
 import Combine
+import Foundation
 
 class AppState: ObservableObject {
     @Published var projects: [DdevProject] = []
@@ -11,6 +12,15 @@ class AppState: ObservableObject {
     private var statusTimer: Timer?
     private var refreshTimer: Timer?
     private var startingProjectTimer: Timer?
+    private var diskSpaceTimer: Timer?
+    
+    /// Avoid repeating the disk alert until usage falls below the threshold again.
+    private var diskSpaceAlertLatchActive = false
+    
+    private static let diskSpaceCheckInterval: TimeInterval = 60
+    
+    /// Active mutagen timer interval; `-1` means not yet aligned to adaptive pacing.
+    private var mutagenPollTimerInterval: TimeInterval = -1
     
     private var xdebugStatusCache: [String: Bool] = [:]
     private var databaseAvailableCache: [String: Bool] = [:]
@@ -22,7 +32,65 @@ class AppState: ObservableObject {
     init() {
         observeSettingsChanges()
         setupTimers()
+        setupDiskSpaceMonitoring()
         refreshProjects()
+    }
+    
+    private func setupDiskSpaceMonitoring() {
+        diskSpaceTimer?.invalidate()
+        diskSpaceTimer = nil
+        
+        guard settings.diskSpaceWarningEnabled else {
+            diskSpaceAlertLatchActive = false
+            return
+        }
+        
+        let diskTimer = Timer(
+            timeInterval: Self.diskSpaceCheckInterval,
+            target: self,
+            selector: #selector(checkDiskSpaceThresholdTick),
+            userInfo: nil,
+            repeats: true
+        )
+        diskTimer.tolerance = min(Self.diskSpaceCheckInterval * 0.15, 30)
+        diskSpaceTimer = diskTimer
+        RunLoop.main.add(diskTimer, forMode: .common)
+        
+        checkDiskSpaceThreshold()
+    }
+    
+    @objc private func checkDiskSpaceThresholdTick() {
+        checkDiskSpaceThreshold()
+    }
+    
+    private func checkDiskSpaceThreshold() {
+        guard settings.diskSpaceWarningEnabled else { return }
+        guard let fraction = DiskSpaceReader.bootVolumeUsedFraction() else { return }
+        
+        let usedPercent = fraction * 100.0
+        let threshold = settings.diskSpaceWarningThresholdPercent
+        
+        if usedPercent >= threshold {
+            guard !diskSpaceAlertLatchActive else { return }
+            diskSpaceAlertLatchActive = true
+            presentDiskSpaceWarningAlert(usedPercent: usedPercent, threshold: threshold)
+        } else {
+            diskSpaceAlertLatchActive = false
+        }
+    }
+    
+    private func presentDiskSpaceWarningAlert(usedPercent: Double, threshold: Double) {
+        let shownPercent = Int(usedPercent.rounded())
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Disk space warning"
+        alert.informativeText = """
+            Your startup disk is about \(shownPercent)% full (warning threshold: \(Int(threshold))%). \
+            Free up space to avoid macOS stability issues and problems with Docker or Mutagen sync.
+            """
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     func observeSettingsChanges() {
@@ -30,6 +98,7 @@ class AppState: ObservableObject {
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.setupTimers()
+                self?.setupDiskSpaceMonitoring()
             }
             .store(in: &cancellables)
     }
@@ -39,18 +108,22 @@ class AppState: ObservableObject {
         refreshTimer = nil
         
         if settings.projectRefreshInterval > 0 {
-            refreshTimer = Timer.scheduledTimer(
-                timeInterval: settings.projectRefreshInterval,
+            let interval = settings.projectRefreshInterval
+            let timer = Timer(
+                timeInterval: interval,
                 target: self,
                 selector: #selector(refreshProjects),
                 userInfo: nil,
                 repeats: true
             )
+            timer.tolerance = max(interval * 0.15, 2)
+            refreshTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
 
     @objc func refreshProjects() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let projects = self.ddevService.listProjects()
             
@@ -90,17 +163,9 @@ class AppState: ObservableObject {
     func startMonitoring(project: String) {
         stopMonitoring()
         monitoredProject = project
-        
+        mutagenPollTimerInterval = -1
         statusTimer?.invalidate()
-        
-        statusTimer = Timer.scheduledTimer(
-            timeInterval: settings.mutagenPollInterval,
-            target: self,
-            selector: #selector(checkMutagenStatus),
-            userInfo: nil,
-            repeats: true
-        )
-        
+        statusTimer = nil
         checkMutagenStatus()
     }
 
@@ -108,7 +173,73 @@ class AppState: ObservableObject {
         monitoredProject = nil
         statusTimer?.invalidate()
         statusTimer = nil
+        mutagenPollTimerInterval = -1
         currentStatus = .idle
+    }
+    
+    /// Poll quickly while Mutagen is busy; ease off when synced (still responsive when sync starts).
+    private func adaptiveMutagenPollInterval(for syncStatus: MutagenSyncStatus) -> TimeInterval {
+        let configured = settings.mutagenPollInterval
+        switch syncStatus {
+        case .synced, .watching:
+            return max(configured * 2, 1)
+        case .paused:
+            return max(configured * 2, 1)
+        case .scanning, .syncing, .staging:
+            return configured
+        case .problems, .disconnected, .unknown:
+            return max(configured * 2, 1)
+        }
+    }
+    
+    /// After idle→active sync transitions, sample a few times at the fast interval so menu/icon updates feel immediate.
+    private func scheduleMutagenBurstAfterBecomingBusy(previous: MutagenSyncStatus, next: MutagenSyncStatus) {
+        guard next.isSyncing, !previous.isSyncing else { return }
+        let interval = settings.mutagenPollInterval
+        for step in 1...3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(step)) { [weak self] in
+                guard let self, self.monitoredProject != nil else { return }
+                self.checkMutagenStatus()
+            }
+        }
+    }
+    
+    private func scheduleMutagenTimerIfNeeded(for syncStatus: MutagenSyncStatus) {
+        guard monitoredProject != nil else { return }
+        
+        let interval = adaptiveMutagenPollInterval(for: syncStatus)
+        if abs(interval - mutagenPollTimerInterval) < 0.05, statusTimer != nil {
+            return
+        }
+        
+        mutagenPollTimerInterval = interval
+        statusTimer?.invalidate()
+        
+        let timer = Timer(
+            timeInterval: interval,
+            target: self,
+            selector: #selector(checkMutagenStatus),
+            userInfo: nil,
+            repeats: true
+        )
+        timer.tolerance = min(max(interval * 0.25, 0.05), interval * 0.5)
+        statusTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    
+    private static func statusIcon(for syncStatus: MutagenSyncStatus) -> StatusIcon {
+        switch syncStatus {
+        case .synced, .watching:
+            return .synced
+        case .scanning:
+            return .scanning
+        case .syncing, .staging:
+            return .syncing
+        case .problems, .disconnected, .unknown:
+            return .error
+        case .paused:
+            return .idle
+        }
     }
     
     @objc private func checkMutagenStatus() {
@@ -117,28 +248,35 @@ class AppState: ObservableObject {
             return
         }
         
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let status = self.ddevService.getMutagenStatus(for: project)
             
-            DispatchQueue.main.async {
-                switch status.status {
-                case .synced, .watching:
-                    self.currentStatus = .synced
-                case .scanning:
-                    self.currentStatus = .scanning
-                case .syncing, .staging:
-                    self.currentStatus = .syncing
-                case .problems, .disconnected, .unknown:
-                    self.currentStatus = .error
-                case .paused:
-                    self.currentStatus = .idle
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                guard self.monitoredProject == project else { return }
+                
+                let newMenuIcon = Self.statusIcon(for: status.status)
+                let statusString = status.rawOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? status.status.rawValue
+                
+                guard let index = self.projects.firstIndex(where: { $0.name == project }) else {
+                    self.scheduleMutagenTimerIfNeeded(for: status.status)
+                    return
                 }
                 
-                guard let index = self.projects.firstIndex(where: { $0.name == project }) else { return }
-                
                 let projectItem = self.projects[index]
-                let statusString = status.rawOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? status.status.rawValue
+                let prevMutagen = projectItem.mutagenStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let previousSync = MutagenSyncStatus(fromString: prevMutagen)
+                
+                if prevMutagen == statusString, self.currentStatus == newMenuIcon {
+                    self.scheduleMutagenTimerIfNeeded(for: status.status)
+                    return
+                }
+                
+                self.scheduleMutagenBurstAfterBecomingBusy(previous: previousSync, next: status.status)
+                
+                self.currentStatus = newMenuIcon
+                
                 let updatedProject = DdevProject(
                     name: projectItem.name,
                     status: projectItem.status,
@@ -153,6 +291,8 @@ class AppState: ObservableObject {
                     mutagenStatus: statusString
                 )
                 self.projects[index] = updatedProject
+                
+                self.scheduleMutagenTimerIfNeeded(for: status.status)
             }
         }
     }
@@ -186,15 +326,18 @@ class AppState: ObservableObject {
     func trackProjectStatus(_ projectName: String, targetStatus: String) {
         startingProjectTimer?.invalidate()
         
-        startingProjectTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-            self?.checkProjectStatus(projectName, targetStatus: targetStatus, timer: timer)
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] t in
+            self?.checkProjectStatus(projectName, targetStatus: targetStatus, timer: t)
         }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        startingProjectTimer = timer
         
         checkProjectStatus(projectName, targetStatus: targetStatus, timer: nil)
     }
 
     private func checkProjectStatus(_ projectName: String, targetStatus: String, timer: Timer?) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let projects = self.ddevService.listProjects()
             
@@ -234,5 +377,7 @@ class AppState: ObservableObject {
         statusTimer?.invalidate()
         refreshTimer?.invalidate()
         startingProjectTimer?.invalidate()
+        diskSpaceTimer?.invalidate()
+        diskSpaceTimer = nil
     }
 }

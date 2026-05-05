@@ -1,6 +1,6 @@
 import AppKit
 
-enum StatusIcon {
+enum StatusIcon: Equatable {
     case initializing
     case idle
     case synced
