@@ -35,16 +35,22 @@ class DdevService {
     
     func listProjects() -> [DdevProject] {
         let path = ddevPath
+        #if DEBUG
         print("Running '\(path) list --json-output'")
+        #endif
         
         guard let output = runShell("\(path) list --json-output"),
               !output.isEmpty else {
+            #if DEBUG
             print("Failed to run ddev list - no output")
+            #endif
             return []
         }
         
         if output.contains("Could not connect to a Docker provider") {
+            #if DEBUG
             print("Docker is not running")
+            #endif
             return []
         }
         
@@ -66,7 +72,9 @@ class DdevService {
         do {
             let decoder = JSONDecoder()
             let response = try decoder.decode(DdevListResponse.self, from: data)
+            #if DEBUG
             print("Successfully parsed \(response.raw.count) projects")
+            #endif
             return response.raw
         } catch {
             print("Failed to parse ddev list JSON: \(error)")

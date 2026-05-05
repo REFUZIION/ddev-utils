@@ -27,6 +27,7 @@ class MenuManager: NSObject, NSMenuDelegate {
     private func setupBindings() {
         appState.$projects
             .receive(on: DispatchQueue.main)
+            .throttle(for: .milliseconds(400), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] _ in self?.rebuildMenuItems() }
             .store(in: &cancellables)
         

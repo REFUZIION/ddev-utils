@@ -107,6 +107,9 @@ struct GeneralSettingsView: View {
                     }
                     .frame(width: 150)
                 }
+                Text("During active sync, polling uses your interval below. When Mutagen is idle (synced), polling slows to about every max(2x that interval, 1 second). When a sync starts, a short burst of extra checks runs so the menu bar and menu update quickly.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
                 Text("Refresh Intervals")
             }
@@ -363,7 +366,7 @@ struct AdvancedSettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("DDEV Utils")
                                 .font(.headline)
-                            Text("Version 1.2.1")
+                            Text("Version 1.2.2")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
