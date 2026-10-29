@@ -1,6 +1,10 @@
 import Foundation
 
 func runShell(_ command: String, shellPath: String? = nil) -> String? {
+    runShellWithStatus(command, shellPath: shellPath).output
+}
+
+func runShellWithStatus(_ command: String, shellPath: String? = nil) -> (output: String?, succeeded: Bool) {
     let task = Process()
     let pipe = Pipe()
     
@@ -28,7 +32,7 @@ func runShell(_ command: String, shellPath: String? = nil) -> String? {
         try task.run()
     } catch {
         print("Error launching shell command '\(command)' with shell '\(shell)': \(error)")
-        return nil
+        return (nil, false)
     }
     
     let fileHandle = pipe.fileHandleForReading
@@ -48,48 +52,28 @@ func runShell(_ command: String, shellPath: String? = nil) -> String? {
         print("Command '\(command)' exited with status \(task.terminationStatus)")
     }
     
-    return output
+    return (output, task.terminationStatus == 0)
 }
 
-func runShellAsync(_ command: String, completion: @escaping (String?) -> Void) {
+/// Completion runs on the main thread with the output and whether the command exited with 0.
+func runShellAsync(_ command: String, completion: @escaping (String?, Bool) -> Void) {
     DispatchQueue.global(qos: .userInitiated).async {
-        let result = runShell(command)
+        let result = runShellWithStatus(command)
         DispatchQueue.main.async {
-            completion(result)
+            completion(result.output, result.succeeded)
         }
     }
 }
 
 func detectDdevPath() -> String? {
-    let task = Process()
-    let pipe = Pipe()
-    
-    task.standardOutput = pipe
-    task.standardError = pipe
-    task.arguments = ["-c", "which ddev"]
-    task.launchPath = "/bin/bash"
-    
-    var environment = ProcessInfo.processInfo.environment
-    let additionalPaths = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    if let existingPath = environment["PATH"] {
-        environment["PATH"] = "\(additionalPaths):\(existingPath)"
-    } else {
-        environment["PATH"] = additionalPaths
-    }
-    task.environment = environment
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        
-        let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty && FileManager.default.fileExists(atPath: path) else { return nil }
-        return path
-    } catch {
-        print("Error detecting ddev path: \(error)")
-        return nil
-    }
+    // Last line only: a login shell may print profile noise first.
+    guard let output = runShell("command -v ddev", shellPath: "/bin/bash"),
+          let path = output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines).last,
+          !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+    return path
+}
+
+/// Quotes a value for safe use as one shell argument.
+func shq(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }

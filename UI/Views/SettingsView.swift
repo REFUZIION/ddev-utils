@@ -38,9 +38,6 @@ struct GeneralSettingsView: View {
             Section {
                 Toggle("Auto-monitor first running project", isOn: $settings.autoMonitorFirstProject)
                     .help("Automatically start monitoring the first running project when the app launches")
-                
-                Toggle("Notify when sync completes", isOn: $settings.notifyOnSyncComplete)
-                    .help("Show a notification when Mutagen sync finishes")
             } header: {
                 Text("Behavior")
             }
@@ -107,7 +104,7 @@ struct GeneralSettingsView: View {
                     }
                     .frame(width: 150)
                 }
-                Text("During active sync, polling uses your interval below. When Mutagen is idle (synced), polling slows to about every max(2x that interval, 1 second). When a sync starts, a short burst of extra checks runs so the menu bar and menu update quickly.")
+                Text("During active sync, polling uses your interval below. When Mutagen is idle (synced), polling slows to about every max(2x that interval, 1 second). A new check never starts while the previous one is still running.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
@@ -194,12 +191,6 @@ struct ProjectsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Show in menu:", selection: $settings.projectFilterMode) {
-                    ForEach(ProjectFilterMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                
                 Toggle("Hide stopped projects submenu", isOn: $settings.hideStoppedProjects)
                     .help("Completely hide the stopped projects from the menu")
             } header: {
@@ -366,7 +357,7 @@ struct AdvancedSettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("DDEV Utils")
                                 .font(.headline)
-                            Text("Version 1.2.2")
+                            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
