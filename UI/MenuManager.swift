@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 class MenuManager: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
@@ -7,7 +6,6 @@ class MenuManager: NSObject, NSMenuDelegate {
     private let actionHandler: ActionHandler
     private let windowManager: WindowManager
     private let settings = SettingsManager.shared
-    private var cancellables = Set<AnyCancellable>()
 
     init(appState: AppState, actionHandler: ActionHandler, windowManager: WindowManager) {
         self.appState = appState
@@ -16,7 +14,6 @@ class MenuManager: NSObject, NSMenuDelegate {
         super.init()
         
         menu.delegate = self
-        setupBindings()
         rebuildMenuItems()
     }
 
@@ -24,34 +21,8 @@ class MenuManager: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func setupBindings() {
-        appState.$projects
-            .receive(on: DispatchQueue.main)
-            .throttle(for: .milliseconds(400), scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        appState.$monitoredProject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        appState.$startingProjects
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-            
-        appState.$stoppingProjects
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        settings.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-    }
-
+    /// Rebuild only right before the menu opens. Rebuilding while it is open tears down
+    /// the submenu under the mouse and leaves the popups unresponsive.
     func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenuItems()
     }
@@ -239,7 +210,7 @@ class MenuManager: NSObject, NSMenuDelegate {
         let mutagenStatus = MutagenSyncStatus(fromString: mutagenStatusString)
         
         switch mutagenStatus {
-        case .synced, .watching:
+        case .synced:
             item.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Synced")
         case .syncing, .staging, .scanning:
             item.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Syncing")
@@ -249,6 +220,8 @@ class MenuManager: NSObject, NSMenuDelegate {
             item.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "Paused")
         case .disconnected, .unknown:
             item.image = NSImage(systemSymbolName: "questionmark.circle.fill", accessibilityDescription: "Unknown")
+        case .disabled:
+            break
         }
         
         return item
@@ -286,7 +259,7 @@ class MenuManager: NSObject, NSMenuDelegate {
     }
 
     @objc private func refreshProjectsAction() {
-        actionHandler.refreshProjects()
+        appState.refreshProjects()
     }
     
     @objc private func openSettingsAction() {
@@ -294,17 +267,17 @@ class MenuManager: NSObject, NSMenuDelegate {
     }
     
     @objc private func quitAppAction() {
-        actionHandler.quitApp()
+        NSApplication.shared.terminate(nil)
     }
     
     @objc private func monitorProjectAction(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        actionHandler.monitorProject(name)
+        appState.startMonitoring(project: name)
     }
     
     @objc private func toggleFavoriteAction(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        actionHandler.toggleFavorite(name)
+        settings.toggleFavorite(name)
     }
     
     @objc private func sshIntoProjectAction(_ sender: NSMenuItem) {

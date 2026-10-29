@@ -11,7 +11,6 @@ class AppState: ObservableObject {
 
     private var statusTimer: Timer?
     private var refreshTimer: Timer?
-    private var startingProjectTimer: Timer?
     private var diskSpaceTimer: Timer?
     
     /// Avoid repeating the disk alert until usage falls below the threshold again.
@@ -22,8 +21,12 @@ class AppState: ObservableObject {
     /// Active mutagen timer interval; `-1` means not yet aligned to adaptive pacing.
     private var mutagenPollTimerInterval: TimeInterval = -1
     
-    private var xdebugStatusCache: [String: Bool] = [:]
+    /// A nil value means "looked up, unavailable"; a missing key means "not looked up yet".
+    private var xdebugStatusCache: [String: Bool?] = [:]
     private var databaseAvailableCache: [String: Bool] = [:]
+    
+    /// Shell checks can outlast their timer interval; skip ticks instead of piling up processes.
+    private var isCheckingMutagen = false
     
     private let ddevService = DdevService()
     private let settings = SettingsManager.shared
@@ -127,18 +130,9 @@ class AppState: ObservableObject {
             guard let self = self else { return }
             let projects = self.ddevService.listProjects()
             
-            for project in projects where project.status == "running" {
-                guard let projectPath = project.approot,
-                      self.databaseAvailableCache[projectPath] == nil else { continue }
-                
-                let hasDatabase = self.ddevService.hasDatabase(at: projectPath)
-                DispatchQueue.main.async {
-                    self.databaseAvailableCache[projectPath] = hasDatabase
-                }
-            }
-            
             DispatchQueue.main.async {
                 self.projects = projects
+                self.loadProjectDetails(for: projects)
                 
                 if self.currentStatus == .initializing {
                     self.currentStatus = .idle
@@ -156,6 +150,30 @@ class AppState: ObservableObject {
                       let firstRunning = projects.first(where: { $0.status == "running" }) else { return }
                 
                 self.startMonitoring(project: firstRunning.name)
+            }
+        }
+    }
+    
+    /// Looks up database and xdebug state in the background so building the menu never runs a shell.
+    /// Call on the main thread: the caches are only touched there.
+    private func loadProjectDetails(for projects: [DdevProject]) {
+        let paths = projects.filter { $0.status == "running" }.compactMap(\.approot)
+        let needDatabase = paths.filter { databaseAvailableCache[$0] == nil }
+        let needXdebug = paths.filter { xdebugStatusCache[$0] == nil }
+        guard !needDatabase.isEmpty || !needXdebug.isEmpty else { return }
+        
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let databases = needDatabase.map { ($0, self.ddevService.hasDatabase(at: $0)) }
+            let xdebugs = needXdebug.map { ($0, self.ddevService.getXdebugStatus(at: $0)) }
+            
+            DispatchQueue.main.async {
+                for (path, hasDatabase) in databases {
+                    self.databaseAvailableCache[path] = hasDatabase
+                }
+                for (path, status) in xdebugs where self.xdebugStatusCache[path] == nil {
+                    self.xdebugStatusCache.updateValue(status, forKey: path)
+                }
             }
         }
     }
@@ -181,26 +199,10 @@ class AppState: ObservableObject {
     private func adaptiveMutagenPollInterval(for syncStatus: MutagenSyncStatus) -> TimeInterval {
         let configured = settings.mutagenPollInterval
         switch syncStatus {
-        case .synced, .watching:
-            return max(configured * 2, 1)
-        case .paused:
-            return max(configured * 2, 1)
         case .scanning, .syncing, .staging:
             return configured
-        case .problems, .disconnected, .unknown:
+        default:
             return max(configured * 2, 1)
-        }
-    }
-    
-    /// After idle→active sync transitions, sample a few times at the fast interval so menu/icon updates feel immediate.
-    private func scheduleMutagenBurstAfterBecomingBusy(previous: MutagenSyncStatus, next: MutagenSyncStatus) {
-        guard next.isSyncing, !previous.isSyncing else { return }
-        let interval = settings.mutagenPollInterval
-        for step in 1...3 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(step)) { [weak self] in
-                guard let self, self.monitoredProject != nil else { return }
-                self.checkMutagenStatus()
-            }
         }
     }
     
@@ -229,7 +231,7 @@ class AppState: ObservableObject {
     
     private static func statusIcon(for syncStatus: MutagenSyncStatus) -> StatusIcon {
         switch syncStatus {
-        case .synced, .watching:
+        case .synced:
             return .synced
         case .scanning:
             return .scanning
@@ -237,7 +239,7 @@ class AppState: ObservableObject {
             return .syncing
         case .problems, .disconnected, .unknown:
             return .error
-        case .paused:
+        case .paused, .disabled:
             return .idle
         }
     }
@@ -247,68 +249,48 @@ class AppState: ObservableObject {
             currentStatus = .idle
             return
         }
+        guard !isCheckingMutagen else { return }
+        isCheckingMutagen = true
         
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            let status = self.ddevService.getMutagenStatus(for: project)
+            let result = self.ddevService.getMutagenStatus(for: project)
             
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                guard self.monitoredProject == project else { return }
-                
-                let newMenuIcon = Self.statusIcon(for: status.status)
-                let statusString = status.rawOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? status.status.rawValue
-                
-                guard let index = self.projects.firstIndex(where: { $0.name == project }) else {
-                    self.scheduleMutagenTimerIfNeeded(for: status.status)
+                self.isCheckingMutagen = false
+                guard self.monitoredProject == project else {
+                    // Monitoring switched while this check ran; the new project's first check was skipped.
+                    if self.monitoredProject != nil { self.checkMutagenStatus() }
                     return
                 }
                 
-                let projectItem = self.projects[index]
-                let prevMutagen = projectItem.mutagenStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let previousSync = MutagenSyncStatus(fromString: prevMutagen)
+                let newMenuIcon = Self.statusIcon(for: result.status)
+                let statusString = result.output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? result.status.rawValue
                 
-                if prevMutagen == statusString, self.currentStatus == newMenuIcon {
-                    self.scheduleMutagenTimerIfNeeded(for: status.status)
-                    return
+                // @Published fires on every assignment; only write real changes so the menu isn't rebuilt each poll.
+                if let index = self.projects.firstIndex(where: { $0.name == project }),
+                   self.projects[index].mutagenStatus != statusString {
+                    self.projects[index].mutagenStatus = statusString
+                }
+                if self.currentStatus != newMenuIcon {
+                    self.currentStatus = newMenuIcon
                 }
                 
-                self.scheduleMutagenBurstAfterBecomingBusy(previous: previousSync, next: status.status)
-                
-                self.currentStatus = newMenuIcon
-                
-                let updatedProject = DdevProject(
-                    name: projectItem.name,
-                    status: projectItem.status,
-                    statusDesc: projectItem.statusDesc,
-                    type: projectItem.type,
-                    approot: projectItem.approot,
-                    shortroot: projectItem.shortroot,
-                    httpurl: projectItem.httpurl,
-                    httpsurl: projectItem.httpsurl,
-                    primaryUrl: projectItem.primaryUrl,
-                    mutagenEnabled: projectItem.mutagenEnabled,
-                    mutagenStatus: statusString
-                )
-                self.projects[index] = updatedProject
-                
-                self.scheduleMutagenTimerIfNeeded(for: status.status)
+                // Mutagen is off for this project: nothing will change, so stop polling.
+                if result.status == .disabled {
+                    self.statusTimer?.invalidate()
+                    self.statusTimer = nil
+                    return
+                }
+                self.scheduleMutagenTimerIfNeeded(for: result.status)
             }
         }
     }
 
+    /// Cache only; `loadProjectDetails` fills it in the background.
     func getCachedXdebugStatus(at projectPath: String) -> Bool? {
-        if let cachedStatus = xdebugStatusCache[projectPath] {
-            return cachedStatus
-        }
-        
-        guard let status = ddevService.getXdebugStatus(at: projectPath) else {
-            xdebugStatusCache[projectPath] = nil
-            return nil
-        }
-        
-        xdebugStatusCache[projectPath] = status
-        return status
+        xdebugStatusCache[projectPath] ?? nil
     }
 
     func invalidateXdebugCache(for projectPath: String) {
@@ -316,67 +298,43 @@ class AppState: ObservableObject {
     }
     
     func setXdebugStatus(_ status: Bool, for projectPath: String) {
-        xdebugStatusCache[projectPath] = status
+        xdebugStatusCache.updateValue(status, forKey: projectPath)
     }
     
     func getCachedDatabaseAvailability(at projectPath: String) -> Bool? {
         databaseAvailableCache[projectPath]
     }
 
-    func trackProjectStatus(_ projectName: String, targetStatus: String) {
-        startingProjectTimer?.invalidate()
+    /// Called on the main thread when a ddev start/stop/restart command has exited.
+    func projectActionFinished(_ projectName: String, action: String, output: String?, succeeded: Bool) {
+        startingProjects.remove(projectName)
+        stoppingProjects.remove(projectName)
+        refreshProjects()
         
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] t in
-            self?.checkProjectStatus(projectName, targetStatus: targetStatus, timer: t)
+        guard succeeded else {
+            presentProjectActionFailedAlert(projectName, action: action, output: output)
+            return
         }
-        timer.tolerance = 0.2
-        RunLoop.main.add(timer, forMode: .common)
-        startingProjectTimer = timer
-        
-        checkProjectStatus(projectName, targetStatus: targetStatus, timer: nil)
+        if action != "stop", settings.autoMonitorFirstProject {
+            startMonitoring(project: projectName)
+        }
     }
-
-    private func checkProjectStatus(_ projectName: String, targetStatus: String, timer: Timer?) {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            let projects = self.ddevService.listProjects()
-            
-            DispatchQueue.main.async {
-                self.projects = projects
-                
-                guard let project = projects.first(where: { $0.name == projectName }),
-                      project.status == targetStatus || project.status.contains(targetStatus) else { return }
-                
-                timer?.invalidate()
-                self.startingProjectTimer?.invalidate()
-                self.startingProjectTimer = nil
-                
-                self.startingProjects.remove(projectName)
-                self.stoppingProjects.remove(projectName)
-                
-                if targetStatus == "running" {
-                    if let projectPath = project.approot, self.databaseAvailableCache[projectPath] == nil {
-                        DispatchQueue.global(qos: .utility).async { [weak self] in
-                            guard let self = self else { return }
-                            let hasDatabase = self.ddevService.hasDatabase(at: projectPath)
-                            DispatchQueue.main.async {
-                                self.databaseAvailableCache[projectPath] = hasDatabase
-                            }
-                        }
-                    }
-                    
-                    if self.settings.autoMonitorFirstProject {
-                        self.startMonitoring(project: projectName)
-                    }
-                }
-            }
-        }
+    
+    private func presentProjectActionFailedAlert(_ projectName: String, action: String, output: String?) {
+        let details = output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Failed to \(action) \(projectName)"
+        // ddev prints progress first; the error is at the end.
+        alert.informativeText = details.isEmpty ? "ddev exited with an error." : String(details.suffix(1500))
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     
     func cleanup() {
         statusTimer?.invalidate()
         refreshTimer?.invalidate()
-        startingProjectTimer?.invalidate()
         diskSpaceTimer?.invalidate()
         diskSpaceTimer = nil
     }
