@@ -61,35 +61,14 @@ func runShellAsync(_ command: String, completion: @escaping (String?) -> Void) {
 }
 
 func detectDdevPath() -> String? {
-    let task = Process()
-    let pipe = Pipe()
-    
-    task.standardOutput = pipe
-    task.standardError = pipe
-    task.arguments = ["-c", "which ddev"]
-    task.launchPath = "/bin/bash"
-    
-    var environment = ProcessInfo.processInfo.environment
-    let additionalPaths = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    if let existingPath = environment["PATH"] {
-        environment["PATH"] = "\(additionalPaths):\(existingPath)"
-    } else {
-        environment["PATH"] = additionalPaths
-    }
-    task.environment = environment
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        
-        let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty && FileManager.default.fileExists(atPath: path) else { return nil }
-        return path
-    } catch {
-        print("Error detecting ddev path: \(error)")
-        return nil
-    }
+    // Last line only: a login shell may print profile noise first.
+    guard let output = runShell("command -v ddev", shellPath: "/bin/bash"),
+          let path = output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines).last,
+          !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+    return path
+}
+
+/// Quotes a value for safe use as one shell argument.
+func shq(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }

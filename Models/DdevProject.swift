@@ -13,7 +13,7 @@ struct DdevProject: Codable, Identifiable {
     let httpsurl: String?
     let primaryUrl: String?
     let mutagenEnabled: Bool?
-    let mutagenStatus: String?
+    var mutagenStatus: String?
     
     enum CodingKeys: String, CodingKey {
         case name

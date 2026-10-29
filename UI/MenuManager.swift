@@ -239,7 +239,7 @@ class MenuManager: NSObject, NSMenuDelegate {
         let mutagenStatus = MutagenSyncStatus(fromString: mutagenStatusString)
         
         switch mutagenStatus {
-        case .synced, .watching:
+        case .synced:
             item.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Synced")
         case .syncing, .staging, .scanning:
             item.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Syncing")
@@ -249,6 +249,8 @@ class MenuManager: NSObject, NSMenuDelegate {
             item.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "Paused")
         case .disconnected, .unknown:
             item.image = NSImage(systemSymbolName: "questionmark.circle.fill", accessibilityDescription: "Unknown")
+        case .disabled:
+            break
         }
         
         return item
@@ -286,7 +288,7 @@ class MenuManager: NSObject, NSMenuDelegate {
     }
 
     @objc private func refreshProjectsAction() {
-        actionHandler.refreshProjects()
+        appState.refreshProjects()
     }
     
     @objc private func openSettingsAction() {
@@ -294,17 +296,17 @@ class MenuManager: NSObject, NSMenuDelegate {
     }
     
     @objc private func quitAppAction() {
-        actionHandler.quitApp()
+        NSApplication.shared.terminate(nil)
     }
     
     @objc private func monitorProjectAction(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        actionHandler.monitorProject(name)
+        appState.startMonitoring(project: name)
     }
     
     @objc private func toggleFavoriteAction(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        actionHandler.toggleFavorite(name)
+        settings.toggleFavorite(name)
     }
     
     @objc private func sshIntoProjectAction(_ sender: NSMenuItem) {
