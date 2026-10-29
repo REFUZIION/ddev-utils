@@ -50,30 +50,31 @@ class ActionHandler {
 
     func stopProject(_ projectName: String) {
         appState.stoppingProjects.insert(projectName)
-        ddevService.stopProject(projectName)
-
         if appState.monitoredProject == projectName {
             appState.stopMonitoring()
         }
-
-        appState.trackProjectStatus(projectName, targetStatus: "stopped")
+        ddevService.stopProject(projectName) { [weak self] output, succeeded in
+            self?.appState.projectActionFinished(projectName, action: "stop", output: output, succeeded: succeeded)
+        }
         reopenMenu()
     }
 
     func startProject(_ projectName: String) {
         appState.startingProjects.insert(projectName)
-        ddevService.startProject(projectName)
-        appState.trackProjectStatus(projectName, targetStatus: "running")
+        ddevService.startProject(projectName) { [weak self] output, succeeded in
+            self?.appState.projectActionFinished(projectName, action: "start", output: output, succeeded: succeeded)
+        }
         reopenMenu()
     }
 
     func restartProject(_ projectName: String) {
         appState.startingProjects.insert(projectName)
-        ddevService.restartProject(projectName)
-        appState.trackProjectStatus(projectName, targetStatus: "running")
+        ddevService.restartProject(projectName) { [weak self] output, succeeded in
+            self?.appState.projectActionFinished(projectName, action: "restart", output: output, succeeded: succeeded)
+        }
         reopenMenu()
     }
-
+    
     func reopenMenu() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.statusBarController?.reopenMenu()

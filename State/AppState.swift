@@ -11,16 +11,12 @@ class AppState: ObservableObject {
 
     private var statusTimer: Timer?
     private var refreshTimer: Timer?
-    private var startingProjectTimer: Timer?
     private var diskSpaceTimer: Timer?
     
     /// Avoid repeating the disk alert until usage falls below the threshold again.
     private var diskSpaceAlertLatchActive = false
     
     private static let diskSpaceCheckInterval: TimeInterval = 60
-    
-    /// Stop waiting for a start/stop that never lands (e.g. Docker error).
-    private static let projectStatusTimeout: TimeInterval = 180
     
     /// Active mutagen timer interval; `-1` means not yet aligned to adaptive pacing.
     private var mutagenPollTimerInterval: TimeInterval = -1
@@ -31,8 +27,6 @@ class AppState: ObservableObject {
     
     /// Shell checks can outlast their timer interval; skip ticks instead of piling up processes.
     private var isCheckingMutagen = false
-    private var isCheckingProjectStatus = false
-    private var pendingStatusTargets: [String: (status: String, deadline: Date)] = [:]
     
     private let ddevService = DdevService()
     private let settings = SettingsManager.shared
@@ -311,60 +305,36 @@ class AppState: ObservableObject {
         databaseAvailableCache[projectPath]
     }
 
-    func trackProjectStatus(_ projectName: String, targetStatus: String) {
-        pendingStatusTargets[projectName] = (targetStatus, Date().addingTimeInterval(Self.projectStatusTimeout))
+    /// Called on the main thread when a ddev start/stop/restart command has exited.
+    func projectActionFinished(_ projectName: String, action: String, output: String?, succeeded: Bool) {
+        startingProjects.remove(projectName)
+        stoppingProjects.remove(projectName)
+        refreshProjects()
         
-        if startingProjectTimer == nil {
-            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-                self?.checkPendingProjectStatuses()
-            }
-            timer.tolerance = 0.2
-            RunLoop.main.add(timer, forMode: .common)
-            startingProjectTimer = timer
+        guard succeeded else {
+            presentProjectActionFailedAlert(projectName, action: action, output: output)
+            return
         }
-        
-        checkPendingProjectStatuses()
+        if action != "stop", settings.autoMonitorFirstProject {
+            startMonitoring(project: projectName)
+        }
     }
-
-    private func checkPendingProjectStatuses() {
-        guard !isCheckingProjectStatus else { return }
-        isCheckingProjectStatus = true
-        
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            let projects = self.ddevService.listProjects()
-            
-            DispatchQueue.main.async {
-                self.isCheckingProjectStatus = false
-                self.projects = projects
-                self.loadProjectDetails(for: projects)
-                
-                let now = Date()
-                for (name, target) in self.pendingStatusTargets {
-                    let reached = projects.first(where: { $0.name == name })?.status.contains(target.status) ?? false
-                    guard reached || now > target.deadline else { continue }
-                    
-                    self.pendingStatusTargets.removeValue(forKey: name)
-                    self.startingProjects.remove(name)
-                    self.stoppingProjects.remove(name)
-                    
-                    if reached, target.status == "running", self.settings.autoMonitorFirstProject {
-                        self.startMonitoring(project: name)
-                    }
-                }
-                
-                if self.pendingStatusTargets.isEmpty {
-                    self.startingProjectTimer?.invalidate()
-                    self.startingProjectTimer = nil
-                }
-            }
-        }
+    
+    private func presentProjectActionFailedAlert(_ projectName: String, action: String, output: String?) {
+        let details = output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Failed to \(action) \(projectName)"
+        // ddev prints progress first; the error is at the end.
+        alert.informativeText = details.isEmpty ? "ddev exited with an error." : String(details.suffix(1500))
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     
     func cleanup() {
         statusTimer?.invalidate()
         refreshTimer?.invalidate()
-        startingProjectTimer?.invalidate()
         diskSpaceTimer?.invalidate()
         diskSpaceTimer = nil
     }

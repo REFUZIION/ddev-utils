@@ -195,24 +195,19 @@ class DdevService {
         describe(at: projectPath).flatMap(parseDdevDescribe) != nil
     }
 
-    func stopProject(_ projectName: String) {
-        runShellAsync("\(ddev) stop \(shq(projectName))") { _ in
-            print("Project \(projectName) stopped")
-        }
+    /// `completion` runs on the main thread once ddev has finished (ddev blocks until the project is up or failed).
+    func stopProject(_ projectName: String, completion: @escaping (String?, Bool) -> Void) {
+        runShellAsync("\(ddev) stop \(shq(projectName))", completion: completion)
     }
-
-    func startProject(_ projectName: String) {
-        runShellAsync("\(ddev) start \(shq(projectName))") { _ in
-            print("Project \(projectName) started")
-        }
+    
+    func startProject(_ projectName: String, completion: @escaping (String?, Bool) -> Void) {
+        runShellAsync("\(ddev) start \(shq(projectName))", completion: completion)
     }
-
-    func restartProject(_ projectName: String) {
-        runShellAsync("\(ddev) restart \(shq(projectName))") { _ in
-            print("Project \(projectName) restarted")
-        }
+    
+    func restartProject(_ projectName: String, completion: @escaping (String?, Bool) -> Void) {
+        runShellAsync("\(ddev) restart \(shq(projectName))", completion: completion)
     }
-
+    
     func getXdebugStatus(at projectPath: String) -> Bool? {
         guard let output = runShell("cd \(shq(projectPath)) && \(ddev) xdebug status") else {
             print("Failed to get xdebug status at \(projectPath)")
@@ -242,7 +237,7 @@ class DdevService {
     }
 
     func toggleXdebug(at projectPath: String, completion: ((String?) -> Void)? = nil) {
-        runShellAsync("cd \(shq(projectPath)) && \(ddev) xdebug toggle") { output in
+        runShellAsync("cd \(shq(projectPath)) && \(ddev) xdebug toggle") { output, _ in
             if let output = output, !output.isEmpty {
                 print("Toggled xdebug at \(projectPath)")
                 print("Output: \(output)")

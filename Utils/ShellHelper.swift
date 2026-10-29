@@ -1,6 +1,10 @@
 import Foundation
 
 func runShell(_ command: String, shellPath: String? = nil) -> String? {
+    runShellWithStatus(command, shellPath: shellPath).output
+}
+
+func runShellWithStatus(_ command: String, shellPath: String? = nil) -> (output: String?, succeeded: Bool) {
     let task = Process()
     let pipe = Pipe()
     
@@ -28,7 +32,7 @@ func runShell(_ command: String, shellPath: String? = nil) -> String? {
         try task.run()
     } catch {
         print("Error launching shell command '\(command)' with shell '\(shell)': \(error)")
-        return nil
+        return (nil, false)
     }
     
     let fileHandle = pipe.fileHandleForReading
@@ -48,14 +52,15 @@ func runShell(_ command: String, shellPath: String? = nil) -> String? {
         print("Command '\(command)' exited with status \(task.terminationStatus)")
     }
     
-    return output
+    return (output, task.terminationStatus == 0)
 }
 
-func runShellAsync(_ command: String, completion: @escaping (String?) -> Void) {
+/// Completion runs on the main thread with the output and whether the command exited with 0.
+func runShellAsync(_ command: String, completion: @escaping (String?, Bool) -> Void) {
     DispatchQueue.global(qos: .userInitiated).async {
-        let result = runShell(command)
+        let result = runShellWithStatus(command)
         DispatchQueue.main.async {
-            completion(result)
+            completion(result.output, result.succeeded)
         }
     }
 }

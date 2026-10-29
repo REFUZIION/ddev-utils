@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 class MenuManager: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
@@ -7,7 +6,6 @@ class MenuManager: NSObject, NSMenuDelegate {
     private let actionHandler: ActionHandler
     private let windowManager: WindowManager
     private let settings = SettingsManager.shared
-    private var cancellables = Set<AnyCancellable>()
 
     init(appState: AppState, actionHandler: ActionHandler, windowManager: WindowManager) {
         self.appState = appState
@@ -16,7 +14,6 @@ class MenuManager: NSObject, NSMenuDelegate {
         super.init()
         
         menu.delegate = self
-        setupBindings()
         rebuildMenuItems()
     }
 
@@ -24,34 +21,8 @@ class MenuManager: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func setupBindings() {
-        appState.$projects
-            .receive(on: DispatchQueue.main)
-            .throttle(for: .milliseconds(400), scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        appState.$monitoredProject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        appState.$startingProjects
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-            
-        appState.$stoppingProjects
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-        
-        settings.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildMenuItems() }
-            .store(in: &cancellables)
-    }
-
+    /// Rebuild only right before the menu opens. Rebuilding while it is open tears down
+    /// the submenu under the mouse and leaves the popups unresponsive.
     func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenuItems()
     }
